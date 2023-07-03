@@ -1,0 +1,98 @@
+name: Type Checks
+
+on:
+  push:
+    branches:
+     - main
+     - master
+     - next
+     - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+
+# This allows a subsequently queued workflow run to interrupt previous runs
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: TS ${{ matrix.ts_version }} with "${{ matrix.ts_lib }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ts_version: [4.5, 4.6, 4.7, 4.8, 4.9, 5.0, 5.1]
+        ts_lib: [es2015, es2020, esnext]
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+      - name: Use Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 'lts/*'
+      - uses: actions/cache@v3
+        id: check-cache
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+      - name: install fastify
+        run: |
+          npm install --ignore-scripts
+
+      - name: Determine npm cache directory windows
+        id: npm-cache-dir-windows
+        if: runner.os == 'Windows'
+        run: echo "dir=$(npm config get cache)" >> $env:GITHUB_OUTPUT
+      - name: Determine npm cache directory non-windows
+        id: npm-cache-dir
+        if: runner.os != 'Windows'
+        run: echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
+
+      - uses: actions/cache@v3
+        with:
+          path: ${{ steps.npm-cache-dir-windows.outputs.dir || steps.npm-cache-dir.outputs.dir }}
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json', '**/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - if: inputs.lockfile == false
+        run: npm install --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - if: inputs.lockfile == true
+        run: npm ci --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm rebuild && npm run prepare --if-present
+
+      - name: prebuild types
+        if: inputs.ts-prebuild-script
+        run: npm run ${{ inputs.ts-prebuild-script }}
+
+      - name: npm install working directory
+        if: inputs.ts-working-directory != '.'
+        run: npm install --ignore-scripts
+        working-directory: ${{ inputs.ts-working-directory }}
+
+      - name: install typescript version ${{ matrix.ts_version }}
+        run: npm install --force typescript@${{ matrix.ts_version }}
+        working-directory: ${{ inputs.ts-working-directory }}
+      - name: show installed typescript version
+        run: npm list typescript --depth=0
+        working-directory: ${{ inputs.ts-working-directory }}
+
+      - name: test using lib "${{ matrix.ts_lib }}"
+        run: npx tsc -p ${{ matrix.ts_project }} --lib ${{ matrix.ts_lib }}
+        working-directory: ${{ inputs.ts-working-directory }}
